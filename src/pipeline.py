@@ -1,3 +1,14 @@
+"""
+pipeline.py
+
+Loads raw Amazon Electronics review data (JSONL format), filters and cleans
+records, constructs the binary "helpful" label, and splits the dataset into
+train/validation/test sets.
+
+Input:  Electronics.jsonl (Amazon Reviews 2023, McAuley Lab)
+Output: data/train.csv, data/val.csv, data/test.csv
+"""
+
 import json
 import pandas as pd
 from sklearn.model_selection import train_test_split
@@ -5,18 +16,25 @@ from sklearn.model_selection import train_test_split
 # ── Config ──────────────────────────────────────────────────────────────
 DATA_PATH = "/Users/shail2169/Electronics.jsonl"
 OUTPUT_DIR = "data/"
-SAMPLE_SIZE = 200_000
-HELPFULNESS_THRESHOLD = 3
-RANDOM_STATE = 42
+SAMPLE_SIZE = 200_000          # number of records to sample from the raw ~20M
+HELPFULNESS_THRESHOLD = 3      # min helpful_vote count to be labeled "helpful"
+RANDOM_STATE = 42              # for reproducibility across runs
 
-# ── Load & Filter ────────────────────────────────────────────────────────
+
 def load_data(path, sample_size):
+    """
+    Stream the raw JSONL file line by line (avoids loading ~20M records
+    into memory at once), keep only records with non-null text and title,
+    and stop once `sample_size` valid records have been collected.
+
+    Returns a DataFrame with the raw fields needed downstream.
+    """
     records = []
     with open(path, "r", encoding="utf-8") as f:
         for i, line in enumerate(f):
             record = json.loads(line)
 
-            # drop records with no text
+            # skip records with missing review text or title
             if not record.get("text") or not record.get("title"):
                 continue
 
@@ -37,20 +55,33 @@ def load_data(path, sample_size):
     return pd.DataFrame(records)
 
 
-# ── Label ────────────────────────────────────────────────────────────────
 def create_labels(df, threshold):
+    """
+    Create the binary target variable.
+
+    Note: the original project proposal defined "helpful" using a ratio
+    of helpful_vote / total_vote. This dataset version does not include
+    a total_vote field, so the label is instead a direct threshold on
+    the raw helpful_vote count (see METHODS.docx for full justification).
+    """
     df["helpful"] = (df["helpful_vote"] >= threshold).astype(int)
     return df
 
 
-# ── Split ────────────────────────────────────────────────────────────────
 def split_data(df):
-    train, temp = train_test_split(df, test_size=0.30, random_state=RANDOM_STATE, stratify=df["helpful"])
-    val, test = train_test_split(temp, test_size=0.50, random_state=RANDOM_STATE, stratify=temp["helpful"])
+    """
+    Stratified 70/15/15 train/val/test split, preserving class balance
+    across all three sets.
+    """
+    train, temp = train_test_split(
+        df, test_size=0.30, random_state=RANDOM_STATE, stratify=df["helpful"]
+    )
+    val, test = train_test_split(
+        temp, test_size=0.50, random_state=RANDOM_STATE, stratify=temp["helpful"]
+    )
     return train, val, test
 
 
-# ── Main ─────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     print("Loading data...")
     df = load_data(DATA_PATH, SAMPLE_SIZE)

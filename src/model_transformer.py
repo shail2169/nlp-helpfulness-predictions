@@ -1,3 +1,21 @@
+"""
+model_transformer.py
+
+Trains and evaluates a DistilBERT-based classifier to predict review
+helpfulness directly from review text.
+
+Design notes:
+  - DistilBERT weights are frozen; only a small classification head is
+    trained on top of the [CLS] token representation. This is a deliberate
+    tradeoff to make training feasible on CPU-only hardware.
+  - Training data is subsampled and stratified (10k train / 3k val) since
+    full-scale fine-tuning on 140k records is not feasible on CPU.
+  - Class weighting is applied via the loss function to address imbalance.
+
+Input:  data/{split}_features.csv (text column + helpful label)
+Output: experiments/transformer_results.json
+"""
+
 import pandas as pd
 import numpy as np
 import torch
@@ -10,16 +28,18 @@ import json
 
 # ── Config ───────────────────────────────────────────────────────────────
 MODEL_NAME = "distilbert-base-uncased"
-MAX_LEN = 256
+MAX_LEN = 256               # max token length per review (longer text truncated)
 BATCH_SIZE = 16
 EPOCHS = 3
 LEARNING_RATE = 2e-4
-TRAIN_SAMPLE = 10_000
+TRAIN_SAMPLE = 10_000        # stratified subsample size for CPU feasibility
 VAL_SAMPLE = 3_000
 RANDOM_STATE = 42
 
-# ── Dataset ──────────────────────────────────────────────────────────────
+
 class ReviewDataset(Dataset):
+    """Wraps review texts + labels into tokenized tensors for DistilBERT."""
+
     def __init__(self, texts, labels, tokenizer):
         self.texts = texts
         self.labels = labels
@@ -42,13 +62,18 @@ class ReviewDataset(Dataset):
             "label": torch.tensor(self.labels[idx], dtype=torch.long)
         }
 
-# ── Model ────────────────────────────────────────────────────────────────
+
 class DistilBertClassifier(nn.Module):
+    """
+    DistilBERT encoder (frozen) + a small trainable classification head.
+    Only the head's parameters receive gradient updates during training.
+    """
+
     def __init__(self):
         super().__init__()
         self.bert = DistilBertModel.from_pretrained(MODEL_NAME)
 
-        # freeze transformer weights
+        # freeze transformer weights — only the classification head trains
         for param in self.bert.parameters():
             param.requires_grad = False
 
@@ -61,11 +86,13 @@ class DistilBertClassifier(nn.Module):
 
     def forward(self, input_ids, attention_mask):
         output = self.bert(input_ids=input_ids, attention_mask=attention_mask)
+        # use the [CLS] token's final hidden state as the pooled representation
         cls_output = output.last_hidden_state[:, 0, :]
         return self.classifier(cls_output)
 
-# ── Train ────────────────────────────────────────────────────────────────
+
 def train_epoch(model, loader, optimizer, criterion, device):
+    """Run one training epoch and return the average loss."""
     model.train()
     total_loss = 0
     for batch in loader:
@@ -81,8 +108,13 @@ def train_epoch(model, loader, optimizer, criterion, device):
         total_loss += loss.item()
     return total_loss / len(loader)
 
-# ── Evaluate ─────────────────────────────────────────────────────────────
+
 def evaluate(model, loader, device, split_name):
+    """
+    Evaluate the model and print F1 (macro), AUC-ROC, and a classification
+    report. Macro F1 is used because accuracy is misleading under class
+    imbalance.
+    """
     model.eval()
     all_preds, all_probs, all_labels = [], [], []
     with torch.no_grad():
@@ -109,7 +141,7 @@ def evaluate(model, loader, device, split_name):
 
     return {"split": split_name, "f1_macro": round(f1, 4), "auc_roc": round(auc, 4)}
 
-# ── Main ─────────────────────────────────────────────────────────────────
+
 if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
@@ -119,14 +151,21 @@ if __name__ == "__main__":
     val_df = pd.read_csv("data/val_features.csv").dropna(subset=["text"])
     test_df = pd.read_csv("data/test_features.csv").dropna(subset=["text"])
 
-    # stratified subsample
-    # stratified subsample
-    train_pos = train_df[train_df["helpful"] == 1].sample(min(TRAIN_SAMPLE // 2, train_df["helpful"].sum()), random_state=RANDOM_STATE)
-    train_neg = train_df[train_df["helpful"] == 0].sample(TRAIN_SAMPLE // 2, random_state=RANDOM_STATE)
+    # stratified subsample — keeps class balance in the smaller training set
+    train_pos = train_df[train_df["helpful"] == 1].sample(
+        min(TRAIN_SAMPLE // 2, train_df["helpful"].sum()), random_state=RANDOM_STATE
+    )
+    train_neg = train_df[train_df["helpful"] == 0].sample(
+        TRAIN_SAMPLE // 2, random_state=RANDOM_STATE
+    )
     train_df = pd.concat([train_pos, train_neg]).sample(frac=1, random_state=RANDOM_STATE).reset_index(drop=True)
 
-    val_pos = val_df[val_df["helpful"] == 1].sample(min(VAL_SAMPLE // 2, val_df["helpful"].sum()), random_state=RANDOM_STATE)
-    val_neg = val_df[val_df["helpful"] == 0].sample(VAL_SAMPLE // 2, random_state=RANDOM_STATE)
+    val_pos = val_df[val_df["helpful"] == 1].sample(
+        min(VAL_SAMPLE // 2, val_df["helpful"].sum()), random_state=RANDOM_STATE
+    )
+    val_neg = val_df[val_df["helpful"] == 0].sample(
+        VAL_SAMPLE // 2, random_state=RANDOM_STATE
+    )
     val_df = pd.concat([val_pos, val_neg]).sample(frac=1, random_state=RANDOM_STATE).reset_index(drop=True)
 
     print(f"Train size: {len(train_df)}, Val size: {len(val_df)}")
@@ -144,11 +183,12 @@ if __name__ == "__main__":
 
     model = DistilBertClassifier().to(device)
 
-    # class weights for imbalance
+    # class weights fed into the loss function to counter imbalance
     class_weights = compute_class_weight("balanced", classes=np.array([0, 1]), y=train_df["helpful"].values)
     weights_tensor = torch.tensor(class_weights, dtype=torch.float).to(device)
     criterion = nn.CrossEntropyLoss(weight=weights_tensor)
 
+    # only pass trainable (non-frozen) parameters to the optimizer
     optimizer = torch.optim.Adam(
         filter(lambda p: p.requires_grad, model.parameters()),
         lr=LEARNING_RATE

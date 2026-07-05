@@ -64,6 +64,19 @@ XGBoost matches transformer performance while offering interpretability through 
     python src/model_classical.py
     python src/model_transformer.py
 
+## Running in Jupyter
+
+If you prefer not to use the terminal, notebooks/nlp_helpfulness_walkthrough.ipynb runs the entire pipeline (data loading, feature engineering, both models) inside Jupyter:
+
+    pip install jupyterlab --break-system-packages
+    jupyter lab
+
+Open the notebook and run cells top to bottom. Update the DATA_PATH variable at the top to point to your local Electronics.jsonl file.
+
+## GPU vs CPU Training Time
+
+The DistilBERT model was trained on CPU with frozen transformer weights, taking roughly 2-4 hours for 3 epochs on a 10,000-record stratified subsample. On a CUDA-enabled GPU, the same training run takes approximately 5-10 minutes. Scaling up to the full training set (~140,000 records) on GPU would take roughly 30-60 minutes.
+
 ## Dependencies
 
 - Python 3.11

@@ -75,7 +75,7 @@ Open the notebook and run cells top to bottom. Update the DATA_PATH variable at 
 
 ## GPU vs CPU Training Time
 
-The DistilBERT model was trained on CPU with frozen transformer weights, taking roughly 2-4 hours for 3 epochs on a 10,000-record stratified subsample. On a CUDA-enabled GPU, the same training run takes approximately 5-10 minutes. Scaling up to the full training set (~140,000 records) on GPU would take roughly 30-60 minutes.
+Training the DistilBERT classification head on CPU takes roughly 2-4 hours for 3 epochs on a 10,000-record sample. The same run on a CUDA-enabled GPU takes approximately 5-10 minutes, and scaling to the full training set (~140,000 records) on GPU would take roughly 30-60 minutes.
 
 ## Dependencies
 
